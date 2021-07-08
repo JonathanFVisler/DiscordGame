@@ -1,54 +1,67 @@
-mod cmd_cxt;
-
 use serenity::{
-    async_trait,
-    model::{channel::Message, gateway::Ready},
+    model::{channel::Message},
     prelude::*,
+    framework::standard::macros::{command, group},
+    framework::standard::{CommandResult, StandardFramework},
+
 };
-use cmd_cxt::CmdContext;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use dotenv::var;
 
-const DISCORD_TOKEN: &str = "ODYxOTc0NjM3NTg4MjUwNjY1.YORmcA.MOwlxAYX7KOqu-E-VP77JpGjkZc";
-const PREFIX: char = '+';
+const PREFIX: &str = "+";
 
-pub struct Global {
+#[derive(Default)]
+struct Global {
     count: AtomicUsize,
 }
 
-struct Handler(Arc<Global>);
+struct GlobalKey;
 
-#[async_trait]
-impl EventHandler for Handler {
-    async fn ready(&self, _: Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
-    }
-
-    async fn message(&self, cxt: Context, message: Message) {
-        if let Some(cxt) = CmdContext::new(self.0.clone(), cxt, message) {
-            run_command(cxt).await;
-        }
-    }
+impl TypeMapKey for GlobalKey {
+    type Value = Global;
 }
+
+#[group]
+#[commands(ping, please_say, increase)]
+struct General;
 
 #[tokio::main]
 async fn main() {
-    let global = Arc::new(Global {
-        count: AtomicUsize::new(0),
-    });
-    let mut client = Client::builder(DISCORD_TOKEN).event_handler(Handler(global)).await.expect("Err creating client");
+    let token = var("DISCORD_TOKEN").unwrap();
+
+    let framework = StandardFramework::new()
+        .configure(|c| c.prefix(PREFIX))
+        .group(&GENERAL_GROUP);
+
+    let mut client = Client::builder(token).framework(framework).await.expect("Err creating client");
+
+    {
+        let mut data = client.data.write().await;
+        data.insert::<GlobalKey>(Global::default());
+    }
 
     client.start().await.unwrap()
 }
 
-async fn run_command(cxt: CmdContext) {
-    match cxt.cmd() {
-        "ping" => cxt.respond(format!("pong{}", PREFIX)).await,
-        "please_say" => cxt.respond(cxt.args_raw()).await,
-        "increase" => {
-            let val = cxt.global().count.fetch_add(1, Ordering::SeqCst) + 1;
-            cxt.respond(format!("count: {}", val)).await;
-        },
-        cmd => cxt.respond(format!("Unknown command `{}`", cmd)).await,
-    }
+#[command]
+async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
+    msg.channel_id.say(&ctx.http, format!("ping{}", PREFIX)).await?;
+    Ok(())
 }
+
+#[command]
+async fn please_say(ctx: &Context, msg: &Message) -> CommandResult {
+    let content = msg.content.split_once("please_say").unwrap().1;
+    msg.channel_id.say(&ctx.http, content.trim_start()).await?;
+    Ok(())
+}
+
+#[command]
+async fn increase(ctx: &Context, msg: &Message) -> CommandResult {
+    let data = ctx.data.read().await;
+    let global = data.get::<GlobalKey>().unwrap();
+    let val = global.count.fetch_add(1, Ordering::SeqCst) + 1;
+    msg.channel_id.say(&ctx.http, format!("count: {}", val)).await?;
+    Ok(())
+}
+
